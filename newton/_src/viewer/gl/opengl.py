@@ -2014,6 +2014,15 @@ class RendererGL:
     def _set_icon(self):
         import pyglet
 
+        # On some macOS versions, pyglet's Quartz PNG decoder (used by
+        # pyglet.image.load() on Darwin) crashes with a SIGBUS inside
+        # Apple's native ImageIO CGImageSourceCreateImageAtIndex (an OS-level
+        # bug, not specific to these icon files). A try/except cannot catch
+        # this since it's a process-level signal, not a Python exception, so
+        # skip loading/setting the (purely cosmetic) icon on macOS entirely.
+        if sys.platform == "darwin":
+            return
+
         def load_icon(filename):
             filename = os.path.join(os.path.dirname(__file__), filename)
 
@@ -2032,5 +2041,4 @@ class RendererGL:
 
         icons = [load_icon("icon_16.png"), load_icon("icon_32.png"), load_icon("icon_64.png")]
 
-        # 5. Create the window and set the icon
         self.window.set_icon(*icons)
