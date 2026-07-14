@@ -329,9 +329,14 @@ class Example:
             ps[0]["pick_damping"] = 1.0
             picking.pick_state.assign(ps)
 
+        # Face-on view of the x-z plane the arms and cable move in (Z-up yaw
+        # convention: front = (cos yaw, sin yaw)); pulled back along -Y far
+        # enough to frame both arms.
+        center = 0.5 * (tcp_a_p + tcp_b_p)
+        self.viewer.set_camera(pos=wp.vec3(center[0], center[1] - 2.5, center[2]), pitch=0.0, yaw=90.0)
         camera = getattr(self.viewer, "camera", None)
         if camera is not None:
-            camera.set_pivot(0.5 * (tcp_a_p + tcp_b_p))
+            camera.set_pivot(center)
 
         # Test bookkeeping: hand B's gravity-settled pose is captured as a
         # baseline once the sweep starts; the largest excursion from it,

@@ -189,12 +189,15 @@ class Example:
             ps[0]["pick_damping"] = 1.0
             picking.pick_state.assign(ps)
 
-        # Center the camera pivot on the cable so the zoom limit (a fixed
-        # minimum distance from the pivot) doesn't stop you from getting
-        # close to this small, ~1 m long cable.
+        # Face-on view of the x-z plane the cable swings in (Z-up yaw
+        # convention: front = (cos yaw, sin yaw)), pivoting on the cable so
+        # the zoom limit (a fixed minimum distance from the pivot) doesn't
+        # stop you from getting close to this small, ~1 m long cable.
+        center = wp.vec3(0.0, 0.0, anchor_height - 0.5)
+        self.viewer.set_camera(pos=wp.vec3(center[0], center[1] - 2.0, center[2]), pitch=0.0, yaw=90.0)
         camera = getattr(self.viewer, "camera", None)
         if camera is not None:
-            camera.set_pivot(wp.vec3(0.0, 0.0, anchor_height - 0.5))
+            camera.set_pivot(center)
 
         self.capture()
 

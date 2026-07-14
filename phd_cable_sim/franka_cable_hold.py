@@ -308,9 +308,13 @@ class Example:
             ps[0]["pick_damping"] = 1.0
             picking.pick_state.assign(ps)
 
+        # Face-on view of the x-z plane the arm and weight move in (Z-up yaw
+        # convention: front = (cos yaw, sin yaw)).
+        center = 0.5 * (hand_p + weight_p)
+        self.viewer.set_camera(pos=wp.vec3(center[0], center[1] - 2.2, center[2]), pitch=0.0, yaw=90.0)
         camera = getattr(self.viewer, "camera", None)
         if camera is not None:
-            camera.set_pivot(0.5 * (hand_p + weight_p))
+            camera.set_pivot(center)
 
         self.capture()
 

@@ -204,9 +204,13 @@ class Example:
             ps[0]["pick_damping"] = 1.0
             picking.pick_state.assign(ps)
 
+        # Face-on view of the x-z plane the cable drapes in (Z-up yaw
+        # convention: front = (cos yaw, sin yaw)).
+        center = wp.vec3(hand_p[0], 0.0, 0.45)
+        self.viewer.set_camera(pos=wp.vec3(center[0], center[1] - 1.8, center[2]), pitch=0.0, yaw=90.0)
         camera = getattr(self.viewer, "camera", None)
         if camera is not None:
-            camera.set_pivot(wp.vec3(hand_p[0], hand_p[1], 0.3))
+            camera.set_pivot(center)
 
         self.capture()
 

@@ -74,3 +74,7 @@ docs/_static/viser/
 
 # Notebook checkpoints
 **/*.ipynb_checkpoints/
+
+# PhD cable sim CSV outputs (trajectory/profile exports)
+/*.csv
+phd_cable_sim/**/*.csv
