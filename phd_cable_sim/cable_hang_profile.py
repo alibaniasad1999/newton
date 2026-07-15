@@ -11,7 +11,16 @@
 #   --p1 X,Z     first attachment point [m] (the ANCHOR; the image tool uses
 #                the anchor as x=0, so keep p1 at 0,<height> for comparisons)
 #   --p2 X,Z     second attachment point [m]
-#   --length L   cable length [m] (must exceed the p1-p2 distance to sag)
+#   --p3 X,Z     OPTIONAL third attachment point [m]. When given, the cable
+#                runs p1 -> p2 -> p3 and is held at all three: the ends are
+#                clamped and p2 grabs the cable through a ball joint to the
+#                world -- a pinch/hook that holds the point but lets the
+#                cable pivot, giving two independent sagging spans.
+#   --mid-fraction f  arc-length fraction of the cable held at p2 (3-point
+#                mode only); default splits the length across the two spans
+#                proportionally to their chord distances.
+#   --length L   cable length [m] (must exceed the summed anchor distances
+#                to sag)
 # plus the physical cable parameters, defaulting to the shared TPU target in
 # IsaacLab's cable_config.py (E=40 MPa, r=1.5 mm, rho=1150 kg/m^3). Young's
 # modulus is converted to Newton's per-joint constants as
@@ -30,6 +39,10 @@
 #
 # Run with the GUI:
 #   uv run -m phd_cable_sim.cable_hang_profile --viewer gl --p1 0,1.0 --p2 0.8,1.0 --length 1.0
+#
+# Three points (cable held up in the middle at p2):
+#   uv run -m phd_cable_sim.cable_hang_profile --viewer gl \
+#       --p1 0,1.0 --p2 0.5,1.2 --p3 1.0,1.0 --length 1.4
 #
 # Run headless with the built-in sanity checks (includes an analytic
 # catenary cross-check for equal-height anchors):
@@ -106,15 +119,21 @@ class Example:
         self.viewer = viewer
         self.args = args
 
-        p1 = parse_point(args.p1)
-        p2 = parse_point(args.p2)
         # The cable must live in the world x-z plane: the CSV exports and the
         # catenary test read x as the horizontal coordinate (the image tool's
         # convention). For a face-on view the CAMERA is rotated instead (see
         # the set_camera call below) -- do not swap the cable onto another
         # plane to fix the view, that zeroes the exported x column.
-        self.p1 = np.array([p1[0], 0.0, p1[1]])
-        self.p2 = np.array([p2[0], 0.0, p2[1]])
+        def to3d(text: str) -> np.ndarray:
+            x, z = parse_point(text)
+            return np.array([x, 0.0, z])
+
+        # 2 or 3 attachment points, in cable order.
+        self.anchors = [to3d(args.p1), to3d(args.p2)]
+        if args.p3 is not None:
+            self.anchors.append(to3d(args.p3))
+        self.p1 = self.anchors[0]
+        self.p2 = self.anchors[-1]
         self.cable_length = float(args.length)
         cable_radius = float(args.radius)
         young_modulus = float(args.young_modulus)
@@ -131,19 +150,36 @@ class Example:
         # Discretization and per-joint material constants from E.
         self.num_elements = int(args.segments)
         seg_len = self.cable_length / self.num_elements
-        area = math.pi * cable_radius**2
-        second_moment = math.pi * cable_radius**4 / 4.0
-        ea = young_modulus * area  # [N]
-        ei = young_modulus * second_moment  # [N*m^2]
-        stretch_stiffness = ea / seg_len
-        bend_stiffness = ei / seg_len
-        stretch_damping = 1.0e-4
-        bend_damping = 0.5 * bend_stiffness  # heavy relative damping: we want the static shape
-        print(
-            f"[cable] L={self.cable_length} m, r={cable_radius * 1000:.1f} mm, E={young_modulus / 1e6:.0f} MPa -> "
-            f"EA={ea:.1f} N, EI={ei:.2e} N*m^2, per-joint k_stretch={stretch_stiffness:.2e} N/m, "
-            f"k_bend={bend_stiffness:.2e} N*m/rad, mass={density * area * self.cable_length * 1000:.1f} g"
-        )
+        if args.site_params:
+            # The literal values from NVIDIA's Newton manipulation blog post,
+            # passed RAW per joint exactly as the snippet shows -- NO EA/L_seg
+            # normalization, so the effective cable depends on --segments.
+            # This models THEIR stiff industrial harness (EI=3 N*m^2 is
+            # ~20,000x stiffer in bending than the TPU cable), for
+            # side-by-side comparison with the physical default below.
+            cable_radius = 0.003
+            stretch_stiffness = 1.0e12
+            bend_stiffness = 3.0
+            stretch_damping = 1.0e-3
+            bend_damping = 1.0
+            print(
+                "[cable] SITE PARAMS (raw per-joint, blog values): r=3.0 mm, "
+                "k_stretch=1e12, k_bend=3.0, damping=(1e-3, 1.0)"
+            )
+        else:
+            area = math.pi * cable_radius**2
+            second_moment = math.pi * cable_radius**4 / 4.0
+            ea = young_modulus * area  # [N]
+            ei = young_modulus * second_moment  # [N*m^2]
+            stretch_stiffness = ea / seg_len
+            bend_stiffness = ei / seg_len
+            stretch_damping = 1.0e-4
+            bend_damping = 0.5 * bend_stiffness  # heavy relative damping: we want the static shape
+            print(
+                f"[cable] L={self.cable_length} m, r={cable_radius * 1000:.1f} mm, E={young_modulus / 1e6:.0f} MPa -> "
+                f"EA={ea:.1f} N, EI={ei:.2e} N*m^2, per-joint k_stretch={stretch_stiffness:.2e} N/m, "
+                f"k_bend={bend_stiffness:.2e} N*m/rad, mass={density * area * self.cable_length * 1000:.1f} g"
+            )
 
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.mu = 1.0
@@ -161,8 +197,29 @@ class Example:
         )
 
         # Initial sagging centerline with the exact requested arc length,
-        # and per-segment quaternions aligning local +Z to each segment.
-        pts = sagged_polyline(self.p1, self.p2, self.cable_length, self.num_elements)
+        # one sagging span per anchor pair, and per-segment quaternions
+        # aligning local +Z to each segment. Span arc lengths split the
+        # total length by --mid-fraction (default: proportional to chords).
+        chords = [float(np.linalg.norm(b - a)) for a, b in zip(self.anchors[:-1], self.anchors[1:], strict=True)]
+        if len(self.anchors) == 3:
+            f = args.mid_fraction if args.mid_fraction is not None else chords[0] / sum(chords)
+            assert 0.0 < f < 1.0, f"--mid-fraction must be in (0, 1), got {f}"
+            self.span_lengths = [f * self.cable_length, (1.0 - f) * self.cable_length]
+            n1 = min(max(int(round(f * self.num_elements)), 2), self.num_elements - 2)
+            span_segments = [n1, self.num_elements - n1]
+        else:
+            self.span_lengths = [self.cable_length]
+            span_segments = [self.num_elements]
+
+        span_pts = [
+            sagged_polyline(self.anchors[i], self.anchors[i + 1], self.span_lengths[i], span_segments[i])
+            for i in range(len(self.span_lengths))
+        ]
+        # Concatenate spans into one continuous polyline (shared node at p2).
+        pts = np.concatenate([span_pts[0]] + [sp[1:] for sp in span_pts[1:]], axis=0)
+        # Node index held by the middle attachment (3-point mode).
+        self.span_segments = span_segments
+        self.mid_node = span_segments[0] if len(self.anchors) == 3 else None
         positions = [wp.vec3(*p) for p in pts]
         # Per-segment chord lengths: the sagged polyline is parameter-uniform,
         # not length-uniform, and node_positions() must use the real lengths.
@@ -189,12 +246,28 @@ class Example:
 
         # Pin both end segments (zero mass/inertia): the verified kinematic
         # anchor pattern used across this project. Their endpoints sit
-        # exactly at p1/p2 by construction.
+        # exactly at the first/last anchors by construction.
         for body in (cable_bodies[0], cable_bodies[-1]):
             builder.body_mass[body] = 0.0
             builder.body_inv_mass[body] = 0.0
             builder.body_inertia[body] = wp.mat33(0.0)
             builder.body_inv_inertia[body] = wp.mat33(0.0)
+
+        # Middle attachment (3-point mode): a ball joint from the WORLD to
+        # the cable node at p2 -- a pinch/hook that holds the point but lets
+        # the cable rotate through it, so each side sags independently. Kept
+        # out of any articulation (the rod already parents this body via its
+        # cable joint); newton.eval_fk skips it, SolverVBD enforces it.
+        if self.mid_node is not None:
+            mid_body = cable_bodies[self.mid_node]
+            builder.add_joint_ball(
+                parent=-1,
+                child=mid_body,
+                parent_xform=wp.transform(wp.vec3(*self.anchors[1]), wp.quat_identity()),
+                child_xform=wp.transform(
+                    wp.vec3(0.0, 0.0, -0.5 * self.segment_lengths[self.mid_node]), wp.quat_identity()
+                ),
+            )
 
         builder.add_ground_plane()
         builder.color()
@@ -314,9 +387,13 @@ class Example:
         assert np.isfinite(body_velocities).all(), "Non-finite velocities"
         assert (np.abs(body_velocities) < 1.0).all(), "Cable did not settle (velocities too large)"
 
-        # Endpoints stay pinned.
-        assert np.linalg.norm(pts[0] - self.p1) < 1e-3, f"End 1 detached: {pts[0]} vs {self.p1}"
-        assert np.linalg.norm(pts[-1] - self.p2) < 1e-3, f"End 2 detached: {pts[-1]} vs {self.p2}"
+        # Endpoints stay pinned; the middle attachment (if any) holds its
+        # point through the ball joint (allow a little solver slack).
+        assert np.linalg.norm(pts[0] - self.anchors[0]) < 1e-3, f"End 1 detached: {pts[0]} vs {self.anchors[0]}"
+        assert np.linalg.norm(pts[-1] - self.anchors[-1]) < 1e-3, f"End 2 detached: {pts[-1]} vs {self.anchors[-1]}"
+        if self.mid_node is not None:
+            drift = np.linalg.norm(pts[self.mid_node] - self.anchors[1])
+            assert drift < 5e-3, f"Middle attachment slipped {drift * 1000:.1f} mm from {self.anchors[1]}"
 
         # Arc length preserved (near-inextensible).
         arc = float(np.sum(np.linalg.norm(np.diff(pts, axis=0), axis=1)))
@@ -324,14 +401,26 @@ class Example:
             f"Arc length drifted: {arc:.4f} vs {self.cable_length:.4f}"
         )
 
-        # For equal-height anchors, the settled shape of a thin flexible
-        # cable must match the analytic catenary closely.
-        if abs(self.p1[2] - self.p2[2]) < 1e-9:
-            z_ref = analytic_catenary_z(pts[:, 0], self.p1[0], self.p2[0], self.p1[2], self.cable_length)
-            if z_ref is not None:
-                rms = float(np.sqrt(np.mean((pts[:, 2] - z_ref) ** 2)))
-                print(f"[test] RMS vs analytic catenary: {rms * 1000:.2f} mm")
-                assert rms < 0.01, f"Settled shape deviates from catenary: RMS {rms * 1000:.1f} mm"
+        # Each span between equal-height attachments must settle onto the
+        # analytic catenary for its own span arc length (the ball-joint
+        # pinch holds a material point, so no length migrates between spans).
+        node = 0
+        for i, (n_seg, span_len) in enumerate(zip(self.span_segments, self.span_lengths, strict=True)):
+            a, b = self.anchors[i], self.anchors[i + 1]
+            span_nodes = pts[node : node + n_seg + 1]
+            node += n_seg
+            if abs(a[2] - b[2]) > 1e-9:
+                continue
+            z_ref = analytic_catenary_z(span_nodes[:, 0], a[0], b[0], a[2], span_len)
+            if z_ref is None:
+                continue
+            rms = float(np.sqrt(np.mean((span_nodes[:, 2] - z_ref) ** 2)))
+            print(f"[test] span {i + 1} RMS vs analytic catenary: {rms * 1000:.2f} mm")
+            if self.args.site_params:
+                # A stiff harness is NOT a catenary -- report, don't assert.
+                print("[test] (catenary assertion skipped: --site-params models a stiff rod)")
+                continue
+            assert rms < 0.01, f"Span {i + 1} deviates from catenary: RMS {rms * 1000:.1f} mm"
 
         self.write_outputs()
 
@@ -340,6 +429,18 @@ class Example:
         parser = newton.examples.create_parser()
         parser.add_argument("--p1", type=str, default="0.0,1.0", help="Anchor 1 'X,Z' [m] (use as origin).")
         parser.add_argument("--p2", type=str, default="0.8,1.0", help="Anchor 2 'X,Z' [m].")
+        parser.add_argument(
+            "--p3",
+            type=str,
+            default=None,
+            help="Optional anchor 3 'X,Z' [m]; cable then runs p1 -> p2 -> p3, held at all three.",
+        )
+        parser.add_argument(
+            "--mid-fraction",
+            type=float,
+            default=None,
+            help="3-point mode: arc-length fraction of the cable held at p2 (default: chord-proportional).",
+        )
         parser.add_argument("--length", type=float, default=1.0, help="Cable length [m].")
         parser.add_argument("--segments", type=int, default=100, help="Number of rod segments.")
         parser.add_argument("--radius", type=float, default=1.5e-3, help="Cable radius [m] (IsaacLab TPU default).")
@@ -351,6 +452,13 @@ class Example:
             type=float,
             default=None,
             help="Camera distance from the cable [m]; smaller = closer. Default frames the whole cable.",
+        )
+        parser.add_argument(
+            "--site-params",
+            action="store_true",
+            help="Use the raw NVIDIA-blog rod values (r=3 mm, stretch 1e12, bend 3.0, per joint, "
+            "no length normalization) instead of the physical EA/EI conversion -- a stiff "
+            "industrial harness, for comparison.",
         )
         return parser
 
